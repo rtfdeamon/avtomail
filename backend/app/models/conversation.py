@@ -1,13 +1,17 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime
-from typing import List
+from typing import List, TYPE_CHECKING
 
 from sqlalchemy import Enum, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
 from app.models.enums import ConversationStatus
+
+if TYPE_CHECKING:
+    from app.models.log import ConversationLogEntry
+    from app.models.scenario import ConversationScenarioState
 
 
 class Conversation(TimestampMixin, Base):
@@ -29,6 +33,16 @@ class Conversation(TimestampMixin, Base):
         back_populates="conversation",
         cascade="all, delete-orphan",
         order_by="Message.sent_at",
+    )
+    scenario_state: Mapped["ConversationScenarioState | None"] = relationship(
+        back_populates="conversation",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    logs: Mapped[List["ConversationLogEntry"]] = relationship(
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        order_by="ConversationLogEntry.created_at",
     )
 
     def mark_updated(self, message_time: datetime) -> None:

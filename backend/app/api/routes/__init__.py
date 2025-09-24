@@ -1,5 +1,5 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-from app.api.routes import conversations
+from app.api.routes import auth, conversations, scenarios
 
-__all__ = ["conversations"]
+__all__ = ["auth", "conversations", "scenarios"]

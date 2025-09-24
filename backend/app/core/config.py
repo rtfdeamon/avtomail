@@ -40,6 +40,10 @@ class Settings(BaseSettings):
         description="Controls whether confident LLM responses are sent automatically.",
     )
 
+    secret_key: str = Field(default="change-me", repr=False)
+    jwt_algorithm: str = Field(default="HS256")
+    access_token_expire_minutes: int = Field(default=30)
+
     poll_interval_seconds: int = Field(default=120)
     manager_review_delay_minutes: int = Field(default=0)
     language_detection_min_chars: int = Field(default=20)

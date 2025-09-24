@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Avtomail — рабочая панель</title>
+    <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+    <noscript>
+        <div class="no-script">Для полноценной работы включите поддержку JavaScript.</div>
+    </noscript>
+    <div id="app">
+        <header class="topbar">
+            <div class="brand">Avtomail</div>
+            <div class="topbar-actions">
+                <span id="agent-email" class="agent-email"></span>
+                <button id="logout-btn" class="btn btn-secondary" type="button">Выйти</button>
+            </div>
+        </header>
+
+        <main class="workspace">
+            <aside class="sidebar" id="conversation-pane">
+                <div class="sidebar-header">
+                    <h2>Диалоги</h2>
+                    <button id="reload-conversations" class="btn btn-tertiary" type="button" aria-label="Обновить диалоги">↻</button>
+                </div>
+                <div class="sidebar-tools">
+                    <label class="sr-only" for="conversation-search">Поиск по диалогам</label>
+                    <input id="conversation-search" class="input" type="search" placeholder="Поиск по теме или клиенту" autocomplete="off" />
+                    <label class="sr-only" for="status-filter">Статус диалога</label>
+                    <select id="status-filter" class="input">
+                        <option value="">Все статусы</option>
+                        <option value="awaiting_response">Ожидает ответа</option>
+                        <option value="answered_by_llm">Ответил LLM</option>
+                        <option value="needs_human">Нужен оператор</option>
+                        <option value="closed">Закрыт</option>
+                    </select>
+                </div>
+                <div id="conversation-loading" class="loader hidden">
+                    <div class="spinner"></div>
+                    <p>Загружаем диалоги…</p>
+                </div>
+                <div id="conversation-list" class="conversation-list"></div>
+                <div id="conversation-empty" class="empty hidden">Нет подходящих диалогов</div>
+            </aside>
+
+            <section class="detail" id="detail-pane">
+                <div class="empty-state" id="empty-state">
+                    Выберите диалог слева, чтобы просмотреть переписку и сценарий.
+                </div>
+                <div class="detail-view hidden" id="detail-view">
+                    <div id="detail-loading" class="loading-overlay hidden">
+                        <div class="spinner"></div>
+                    </div>
+                    <header class="detail-header">
+                        <div>
+                            <div class="detail-topic" id="detail-topic"></div>
+                            <div class="detail-client" id="detail-client"></div>
+                            <div class="detail-meta" id="detail-meta"></div>
+                        </div>
+                        <div class="detail-status">
+                            <span id="detail-status"></span>
+                            <button id="close-conversation" class="btn btn-tertiary" type="button">Закрыть</button>
+                        </div>
+                    </header>
+
+                    <div class="detail-body">
+                        <section class="message-section">
+                            <div class="message-pane">
+                                <div class="message-toolbar">
+                                    <div class="message-toolbar-info">
+                                        <div class="viewer-subject" id="message-subject"></div>
+                                        <div class="viewer-meta" id="message-summary"></div>
+                                    </div>
+                                    <div class="message-toolbar-actions">
+                                        <button id="reply-btn" class="btn btn-secondary" type="button">Ответить</button>
+                                        <button id="reply-all-btn" class="btn btn-secondary" type="button">Ответить всем</button>
+                                        <button id="forward-btn" class="btn btn-tertiary" type="button">Переслать</button>
+                                    </div>
+                                </div>
+                                <div class="message-layout">
+                                    <aside class="message-list" id="message-list"></aside>
+                                    <article class="message-viewer" id="message-viewer">
+                                        <div class="message-viewer-empty" id="message-viewer-empty">
+                                            Выберите сообщение, чтобы посмотреть содержание.
+                                        </div>
+                                        <div class="message-viewer-body hidden" id="message-viewer-body">
+                                            <header class="message-viewer-header">
+                                                <div class="message-viewer-from" id="message-from"></div>
+                                                <div class="message-viewer-date" id="message-date"></div>
+                                            </header>
+                                            <div class="message-viewer-tags" id="message-tags"></div>
+                                            <div class="message-viewer-content" id="message-content"></div>
+                                        </div>
+                                    </article>
+                                </div>
+                            </div>
+
+                            <section class="compose" id="compose-panel">
+                                <h3>Ответ клиенту</h3>
+                                <div class="compose-draft" id="ai-draft"></div>
+                                <textarea id="compose-text" class="input" rows="5" placeholder="Проверьте заготовку и дополните её при необходимости"></textarea>
+                                <div class="compose-actions">
+                                    <button id="send-approve-ai" class="btn btn-primary" type="button">Отправить черновик ИИ</button>
+                                    <button id="send-manual" class="btn btn-secondary" type="button">Отправить вручную</button>
+                                </div>
+                            </section>
+                        </section>
+
+                        <aside class="scenario-column">
+                            <section class="scenario-panel" id="scenario-panel">
+                                <div class="scenario-header">
+                                    <h3>Сценарий диалога</h3>
+                                    <div class="scenario-actions">
+                                        <select id="scenario-select" class="input"></select>
+                                        <button id="assign-scenario" class="btn btn-primary" type="button">Привязать</button>
+                                    </div>
+                                </div>
+                                <div class="scenario-body">
+                                    <div class="scenario-info" id="scenario-info"></div>
+                                    <div class="scenario-steps" id="scenario-steps"></div>
+                                    <div class="scenario-controls">
+                                        <button id="scenario-prev" class="btn btn-secondary" type="button">← Назад</button>
+                                        <button id="scenario-next" class="btn btn-primary" type="button">Вперёд →</button>
+                                        <button id="scenario-complete" class="btn btn-tertiary" type="button">Завершить сценарий</button>
+                                    </div>
+                                    <div class="scenario-notes">
+                                        <label for="scenario-notes-input">Заметки по сценарию</label>
+                                        <textarea id="scenario-notes-input" class="input" rows="2" placeholder="Добавьте важные детали"></textarea>
+                                        <div class="scenario-notes-actions">
+                                            <button id="scenario-save-notes" class="btn btn-secondary" type="button">Сохранить заметки</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </section>
+                        </aside>
+                    </div>
+                </div>
+            </section>
+
+            <aside class="log-pane" id="log-pane">
+                <div class="log-header">
+                    <h2>Журнал</h2>
+                    <button id="refresh-logs" class="btn btn-tertiary" type="button" aria-label="Обновить журнал">↻</button>
+                </div>
+                <div id="log-list" class="log-list"></div>
+                <div class="log-note">
+                    <h3>Внутренний комментарий</h3>
+                    <input id="log-summary" class="input" placeholder="Краткое описание" />
+                    <textarea id="log-context" class="input" rows="3" placeholder="Детали / контекст"></textarea>
+                    <button id="log-add" class="btn btn-secondary" type="button">Добавить</button>
+                </div>
+            </aside>
+        </main>
+    </div>
+
+    <div id="login-dialog" class="dialog-backdrop">
+        <div class="dialog">
+            <h1>Вход в систему</h1>
+            <form id="login-form" class="login-form">
+                <label>
+                    E-mail
+                    <input type="email" id="login-email" class="input" required />
+                </label>
+                <label>
+                    Пароль
+                    <input type="password" id="login-password" class="input" required />
+                </label>
+                <button class="btn btn-primary" type="submit">Войти</button>
+            </form>
+            <div class="login-hint">Используйте учётные данные, созданные через CLI.</div>
+        </div>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+
+    <script src="/static/app.js" type="module"></script>
+</body>
+</html>

@@ -1,8 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -10,7 +10,8 @@ from sqlalchemy.orm import joinedload
 from app.core.config import Settings, get_settings
 from app.core.logging import logger
 from app.models import Client, Conversation, Message
-from app.models.enums import ConversationStatus, MessageDirection, MessageSender
+from app.models.scenario import ConversationScenarioState, Scenario, ScenarioStep
+from app.models.enums import ConversationActor, ConversationLogEvent, ConversationStatus, MessageDirection, MessageSender
 from app.schemas import MessageSendRequest
 from app.services.conversation_service import ConversationService
 from app.services.language_service import LanguageDetector
@@ -62,6 +63,14 @@ class AutomationService:
             "LLM response generated for conversation %s (requires_human=%s)",
             conversation.id,
             llm_response.requires_human,
+        )
+        await self.conversation_service.log_event(
+            conversation,
+            ConversationLogEvent.LLM_DRAFT_CREATED,
+            summary="LLM draft generated",
+            actor=ConversationActor.ASSISTANT,
+            details={"requires_human": llm_response.requires_human},
+            context=llm_response.content,
         )
 
         if not llm_response.content.strip():
@@ -125,17 +134,15 @@ class AutomationService:
         if email.in_reply_to:
             stmt = (
                 select(Message)
-                .options(joinedload(Message.conversation))
                 .where(Message.external_id == email.in_reply_to)
             )
             message = await self.session.scalar(stmt)
             if message:
-                return message.conversation
+                return await self.conversation_service.get_conversation(message.conversation_id)
 
-        topic = email.subject or "Без темы"
+        topic = email.subject or "New conversation"
         stmt = (
             select(Conversation)
-            .options(joinedload(Conversation.messages))
             .where(
                 Conversation.client_id == client.id,
                 Conversation.status != ConversationStatus.CLOSED,
@@ -146,17 +153,20 @@ class AutomationService:
         conversations = result.unique().all()
         for convo in conversations:
             if convo.topic == topic:
-                return convo
+                return await self.conversation_service.get_conversation(convo.id)
         if conversations:
-            return conversations[0]
+            return await self.conversation_service.get_conversation(conversations[0].id)
 
         new_conversation = Conversation(
             client=client,
             topic=topic,
             status=ConversationStatus.AWAITING_RESPONSE,
-            last_message_at=datetime.utcnow(),
+            last_message_at=datetime.now(timezone.utc),
             last_message_preview=email.body_plain or email.body_html,
         )
+        self.session.add(new_conversation)
+        await self.session.flush()
+        return new_conversation
         self.session.add(new_conversation)
         await self.session.flush()
         return new_conversation
@@ -246,13 +256,45 @@ class AutomationService:
             await self.conversation_service.mark_needs_human(conversation, message)
             raise
         return message
+
     async def _build_llm_messages(self, conversation: Conversation) -> list[dict[str, str]]:
         system_message = {
             "role": "system",
             "content": self._system_prompt(conversation.language),
         }
         historical_messages: list[dict[str, str]] = [system_message]
-        recent_messages = list(conversation.messages)[-6:]
+
+        scenario_state = conversation.__dict__.get("scenario_state")
+        if scenario_state and getattr(scenario_state, "scenario", None):
+            scenario = scenario_state.scenario
+            pieces: list[str] = []
+            if scenario.subject:
+                pieces.append(f"Scenario subject: {scenario.subject}")
+            if scenario.description:
+                pieces.append(scenario.description)
+            if scenario.ai_preamble:
+                pieces.append(scenario.ai_preamble)
+            active_step = scenario_state.active_step
+            if active_step:
+                title = active_step.title or f"Step {active_step.order_index}"
+                pieces.append(f"Active step: {title}")
+                if active_step.description:
+                    pieces.append(active_step.description)
+                if active_step.ai_instructions:
+                    pieces.append(f"Instructions: {active_step.ai_instructions}")
+            if pieces:
+                historical_messages.append({"role": "system", "content": "\n".join(pieces)})
+
+        if "messages" in conversation.__dict__:
+            recent_messages = list(conversation.messages)[-6:]
+        else:
+            stmt = (
+                select(Message)
+                .where(Message.conversation_id == conversation.id)
+                .order_by(Message.created_at.asc())
+            )
+            recent_messages = (await self.session.scalars(stmt)).all()[-6:]
+
         for message in recent_messages:
             content = message.body_plain or self._html_to_text(message.body_html)
             if not content:
@@ -263,14 +305,13 @@ class AutomationService:
 
     def _system_prompt(self, language: str | None) -> str:
         base_prompt = (
-            "Ты виртуальный менеджер по продажам компании. "
-            "Отвечай вежливо, кратко и по делу. "
-            "Всегда отвечай на языке клиента. Если не уверен, начни ответ со слова 'MANAGER' и объясни, что требуется помощь менеджера."
+            "You are a virtual sales assistant. Reply politely, professionally, and concisely. "
+            "Use the assigned scenario and the conversation history as context. If a human manager is required, start the reply with the word 'MANAGER' and explain why."
         )
-        if language and language.startswith("en"):
+        if language and language.startswith("ru"):
             base_prompt = (
-                "You are a sales manager assistant. Respond politely, professionally, and concisely. "
-                "Always answer in the customer's language. If you are unsure, start the reply with the word 'MANAGER' and explain why human help is needed."
+                "You are a virtual sales assistant. Reply in Russian, politely and to the point. "
+                "Use the assigned scenario and the conversation history as context. If a human manager is required, start the reply with the word 'MANAGER' and explain why."
             )
         return base_prompt
 
@@ -285,10 +326,7 @@ class AutomationService:
     @staticmethod
     def _plain_to_html(text: str) -> str:
         escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        return "<p>" + escaped.replace("
-
-", "</p><p>").replace("
-", "<br />") + "</p>"
+        return "<p>" + escaped.replace("\n\n", "</p><p>").replace("\n", "<br />") + "</p>"
 
     @staticmethod
     def _html_to_text(html: str | None) -> str | None:
@@ -296,13 +334,24 @@ class AutomationService:
             return None
         import re
 
-        text = re.sub(r"<br\s*/?>", "
-", html, flags=re.IGNORECASE)
-        text = re.sub(r"</p>", "
-
-", text, flags=re.IGNORECASE)
+        text = re.sub(r"<br\s*/?>", "\n", html, flags=re.IGNORECASE)
+        text = re.sub(r"</p>", "\n\n", text, flags=re.IGNORECASE)
         text = re.sub(r"<[^>]+>", "", text)
         return text
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
