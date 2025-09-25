@@ -12,6 +12,7 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.db import base  # noqa: F401 - ensures models are imported
 from app.db.session import engine
+from app.utils.bootstrap import ensure_default_admin
 from app.workers.poller import InboxPoller, register_inbox_poller, start_poller, stop_poller
 
 
@@ -19,6 +20,7 @@ from app.workers.poller import InboxPoller, register_inbox_poller, start_poller,
 async def lifespan(app: FastAPI):
     settings = get_settings()
     configure_logging(settings.log_level)
+    await ensure_default_admin(settings)
     poller = InboxPoller(settings)
     register_inbox_poller(app, poller)
     await start_poller(app)

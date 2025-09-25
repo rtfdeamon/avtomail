@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = Field(default=30)
 
     poll_interval_seconds: int = Field(default=120)
+    default_admin_email: str = Field(default="admin", description="Bootstrap admin login")
+    default_admin_password: str = Field(default="admin", description="Bootstrap admin password", repr=False)
+
     manager_review_delay_minutes: int = Field(default=0)
     language_detection_min_chars: int = Field(default=20)
     log_level: str = Field(default="INFO")

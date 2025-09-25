@@ -4,6 +4,9 @@ import asyncio
 from typing import Optional
 
 import typer
+import uvicorn
+
+from app.core.logging import configure_logging
 from sqlalchemy import select
 
 from app.core.config import get_settings
@@ -70,6 +73,19 @@ def ensure_admin(
     """Create a superuser if it does not yet exist."""
 
     asyncio.run(_create_or_update_user(email, password, full_name, True, ensure_exists=True))
+
+
+@app.command("run-server")
+def run_server(
+    host: str = typer.Option("127.0.0.1", help="Bind address"),
+    port: int = typer.Option(8000, help="Port"),
+    reload: bool = typer.Option(False, help="Enable auto-reload"),
+    log_level: str = typer.Option("info", help="Log level"),
+) -> None:
+    """Start the API with extended logging."""
+
+    configure_logging(log_level)
+    uvicorn.run("app.main:app", host=host, port=port, reload=reload, log_level=log_level)
 
 
 if __name__ == "__main__":
