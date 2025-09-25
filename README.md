@@ -174,3 +174,12 @@ pwsh scripts/dev.ps1 -NoReload
 ```
 
 The older `run_project.ps1` script remains available, but the new helpers provide the same behaviour for both Windows and POSIX environments.
+
+
+## Quick start
+
+```bash
+python run_local.py --port 8000
+```
+
+Use `--install-only` to bootstrap without starting the server or `--run-only` to skip dependency installation.
