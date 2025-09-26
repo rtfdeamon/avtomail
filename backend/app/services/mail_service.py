@@ -15,6 +15,15 @@ from app.core.logging import logger
 
 
 @dataclass(slots=True)
+class EmailAttachment:
+    filename: str
+    content_type: str | None
+    content_id: str | None
+    payload: bytes
+    is_inline: bool = False
+
+
+@dataclass(slots=True)
 class InboundEmail:
     imap_uid: bytes
     message_id: str
@@ -28,7 +37,15 @@ class InboundEmail:
     body_html: str | None
     in_reply_to: str | None
     references: list[str]
+    attachments: list[EmailAttachment]
     raw: bytes
+
+
+@dataclass(slots=True)
+class OutboundAttachment:
+    filename: str
+    content_type: str | None
+    payload: bytes
 
 
 @dataclass(slots=True)
@@ -122,6 +139,19 @@ class MailService:
         message.set_content(email.body_plain, subtype="plain", charset="utf-8")
         if email.body_html:
             message.add_alternative(email.body_html, subtype="html", charset="utf-8")
+        if email.attachments:
+            for attachment in email.attachments:
+                content_type = attachment.content_type or "application/octet-stream"
+                if "/" in content_type:
+                    maintype, subtype = content_type.split("/", 1)
+                else:
+                    maintype, subtype = content_type, "octet-stream"
+                message.add_attachment(
+                    attachment.payload,
+                    maintype=maintype,
+                    subtype=subtype,
+                    filename=attachment.filename,
+                )
         return message
 
     def _send_via_smtp(self, message: EmailMessage) -> None:
@@ -168,7 +198,7 @@ class MailService:
         references = self._flatten_reference_header(references_header)
         date = parsedate_to_datetime(email_message.get("Date")) if email_message.get("Date") else None
 
-        body_plain, body_html = self._extract_bodies(email_message)
+        body_plain, body_html, attachments = self._extract_content(email_message)
 
         return InboundEmail(
             imap_uid=imap_uid,
@@ -186,35 +216,63 @@ class MailService:
             raw=raw,
         )
 
-    def _extract_bodies(self, email_message) -> tuple[str | None, str | None]:
+    def _extract_content(self, email_message) -> tuple[str | None, str | None, list[EmailAttachment]]:
         plain_parts: list[str] = []
         html_parts: list[str] = []
+        attachments: list[EmailAttachment] = []
         if email_message.is_multipart():
             for part in email_message.walk():
-                if part.get_content_maintype() == "multipart":
+                if part.get_content_maintype() == 'multipart':
                     continue
-                content_type = part.get_content_type()
-                charset = part.get_content_charset() or "utf-8"
-                try:
-                    payload = part.get_payload(decode=True).decode(charset, errors="ignore")
-                except (LookupError, AttributeError):
-                    payload = (part.get_payload(decode=True) or b"").decode("utf-8", errors="ignore")
-                if content_type == "text/plain":
-                    plain_parts.append(payload)
-                elif content_type == "text/html":
-                    html_parts.append(payload)
+                content_disposition = (part.get('Content-Disposition') or '').lower()
+                filename = self._decode_header(part.get_filename())
+                maintype = part.get_content_maintype()
+                is_attachment = bool(filename) or 'attachment' in content_disposition
+                if not is_attachment and maintype == 'text':
+                    text = self._decode_text_part(part)
+                    if part.get_content_subtype() == 'html':
+                        html_parts.append(text)
+                    else:
+                        plain_parts.append(text)
+                    continue
+                payload = part.get_payload(decode=True) or b''
+                attachments.append(
+                    EmailAttachment(
+                        filename=filename or 'attachment',
+                        content_type=part.get_content_type(),
+                        content_id=part.get('Content-ID'),
+                        payload=payload,
+                        is_inline='inline' in content_disposition,
+                    )
+                )
         else:
-            payload = email_message.get_payload(decode=True) or b""
-            charset = email_message.get_content_charset() or "utf-8"
-            text = payload.decode(charset, errors="ignore")
-            if email_message.get_content_type() == "text/html":
+            payload = email_message.get_payload(decode=True) or b''
+            text = self._decode_text_payload(payload, email_message.get_content_charset())
+            if email_message.get_content_type() == 'text/html':
                 html_parts.append(text)
             else:
                 plain_parts.append(text)
 
-        plain_body = "\n".join(plain_parts) if plain_parts else None
-        html_body = "\n".join(html_parts) if html_parts else None
-        return plain_body, html_body
+        plain_body = '\n'.join(plain_parts) if plain_parts else None
+        html_body = '\n'.join(html_parts) if html_parts else None
+        return plain_body, html_body, attachments
+
+    @staticmethod
+    def _decode_text_part(part) -> str:
+        payload = part.get_payload(decode=True) or b''
+        charset = part.get_content_charset() or 'utf-8'
+        try:
+            return payload.decode(charset, errors='ignore')
+        except (LookupError, AttributeError):
+            return payload.decode('utf-8', errors='ignore')
+
+    @staticmethod
+    def _decode_text_payload(payload: bytes, charset: str | None) -> str:
+        charset = charset or 'utf-8'
+        try:
+            return payload.decode(charset, errors='ignore')
+        except (LookupError, AttributeError):
+            return payload.decode('utf-8', errors='ignore')
 
     @staticmethod
     def _decode_header(value: str | None) -> str | None:

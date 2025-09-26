@@ -8,6 +8,16 @@ from app.models.enums import MessageDirection, MessageSender
 from app.schemas.common import ORMModel
 
 
+class MessageAttachmentRead(ORMModel):
+    id: int
+    filename: str
+    content_type: str | None = None
+    file_size: int
+    is_inline: bool = False
+    is_inbound: bool = False
+    download_url: str
+
+
 class MessageRead(ORMModel):
     id: int
     sender_type: MessageSender
@@ -20,6 +30,7 @@ class MessageRead(ORMModel):
     received_at: datetime | None = None
     requires_attention: bool = False
     is_draft: bool = False
+    attachments: list[MessageAttachmentRead] = []
 
 
 class MessageSendRequest(ORMModel):

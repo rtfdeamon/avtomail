@@ -9,6 +9,7 @@ dependencies = [
     "uvicorn[standard]>=0.27",
     "sqlalchemy>=2.0",
     "asyncpg>=0.28",
+    "psycopg2-binary>=2.9",
     "alembic>=1.13",
     "pydantic>=2.6",
     "pydantic-settings>=2.2",
@@ -23,7 +24,9 @@ dependencies = [
     "python-multipart>=0.0.9",
     "typer>=0.9",
     "jinja2>=3.1",
-    "aiofiles>=23.1"
+    "aiofiles>=23.1",
+    "celery[redis]>=5.4",
+    "sentry-sdk[fastapi]>=2.8"
 ]
 
 [project.optional-dependencies]
@@ -32,6 +35,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "aiosqlite>=0.19",
     "pytest-cov>=4.1",
+    "pytest-mock>=3.14",
     "ruff>=0.4",
     "mypy>=1.8"
 ]
@@ -41,5 +45,6 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["backend"]
+
 
 

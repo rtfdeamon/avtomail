@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+from app.models.attachment import MessageAttachment
 from app.models.client import Client
 from app.models.conversation import Conversation
 from app.models.log import ConversationLogEntry
@@ -13,6 +14,7 @@ __all__ = [
     "ConversationLogEntry",
     "ConversationScenarioState",
     "Message",
+    "MessageAttachment",
     "Scenario",
     "ScenarioStep",
     "User",

@@ -10,6 +10,7 @@ from app.models.base import Base, TimestampMixin
 from app.models.enums import ConversationStatus
 
 if TYPE_CHECKING:
+    from app.models.attachment import MessageAttachment
     from app.models.log import ConversationLogEntry
     from app.models.scenario import ConversationScenarioState
 
@@ -43,6 +44,11 @@ class Conversation(TimestampMixin, Base):
         back_populates="conversation",
         cascade="all, delete-orphan",
         order_by="ConversationLogEntry.created_at",
+    )
+    attachments: Mapped[List["MessageAttachment"]] = relationship(
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        order_by="MessageAttachment.created_at",
     )
 
     def mark_updated(self, message_time: datetime) -> None:

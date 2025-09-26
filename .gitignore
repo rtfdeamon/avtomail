@@ -1,0 +1,9 @@
+.venv/
+.env
+.pytest_cache/
+__pycache__/
+*.pyc
+backend/avtomail.egg-info/
+storage/
+*.sqlite3
+*.log

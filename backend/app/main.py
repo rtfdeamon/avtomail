@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app import api, web
 from app.core.config import get_settings
+from app.core.monitoring import init_sentry
 from app.core.logging import configure_logging
 from app.db import base  # noqa: F401 - ensures models are imported
 from app.db.session import engine
@@ -19,6 +20,7 @@ from app.workers.poller import InboxPoller, register_inbox_poller, start_poller,
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    init_sentry(settings)
     configure_logging(settings.log_level)
     await ensure_default_admin(settings)
     poller = InboxPoller(settings)

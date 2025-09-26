@@ -92,6 +92,7 @@
                                                 <div class="message-viewer-date" id="message-date"></div>
                                             </header>
                                             <div class="message-viewer-tags" id="message-tags"></div>
+                                            <div class="message-viewer-attachments hidden" id="message-attachments"></div>
                                             <div class="message-viewer-content" id="message-content"></div>
                                         </div>
                                     </article>
@@ -101,7 +102,12 @@
                             <section class="compose" id="compose-panel">
                                 <h3>Ответ клиенту</h3>
                                 <div class="compose-draft" id="ai-draft"></div>
-                                <textarea id="compose-text" class="input" rows="5" placeholder="Проверьте заготовку и дополните её при необходимости"></textarea>
+                                <textarea id="compose-text" class="input" rows="5" placeholder="��������� ��������� � ��������� � ��� �������������"></textarea>
+                                <div class="compose-attachments">
+                                    <button id="compose-attachments-btn" class="btn btn-tertiary" type="button">Добавить вложение</button>
+                                    <input id="compose-attachments" type="file" multiple class="hidden" />
+                                    <ul id="compose-attachments-list" class="attachments-list hidden"></ul>
+                                </div>
                                 <div class="compose-actions">
                                     <button id="send-approve-ai" class="btn btn-primary" type="button">Отправить черновик ИИ</button>
                                     <button id="send-manual" class="btn btn-secondary" type="button">Отправить вручную</button>

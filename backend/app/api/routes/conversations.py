@@ -1,17 +1,20 @@
 ﻿from __future__ import annotations
 
-from typing import List
+from typing import Any, List
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlalchemy.exc import NoResultFound
 
-from app.models.enums import ConversationActor, ConversationLogEvent, MessageSender
+from app.models.attachment import MessageAttachment
+from app.models.enums import ConversationActor, ConversationLogEvent, MessageDirection, MessageSender
 from app.models.scenario import ConversationScenarioState, ScenarioStep
 from app.schemas import (
     ConversationDetail,
     ConversationLogEntryRead,
     ConversationNoteCreate,
     ConversationSummary,
+    MessageAttachmentRead,
     MessageRead,
     MessageSendRequest,
     ScenarioAdvanceRequest,
@@ -22,11 +25,19 @@ from app.schemas import (
     ScenarioStepRead,
     ScenarioSummary,
 )
+from app.services.attachment_service import AttachmentService, AttachmentTooLargeError
+from app.services.automation_service import AutomationService
 from app.services.auth_service import ensure_superuser, get_current_active_user
 from app.services.conversation_service import ConversationService
+from app.services.mail_service import OutboundAttachment, OutboundEmail
 from app.services.scenario_service import ScenarioService
 
-from ..deps import get_conversation_service, get_scenario_service
+from ..deps import (
+    get_attachment_service,
+    get_conversation_service,
+    get_scenario_service,
+    get_settings_dependency,
+)
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -46,6 +57,28 @@ def _next_step(state: ConversationScenarioState | None) -> ScenarioStep | None:
             return steps[index + 1]
     return None
 
+
+def _attachment_to_schema(
+    request: Request,
+    conversation_id: int,
+    message_id: int,
+    attachment: MessageAttachment,
+) -> MessageAttachmentRead:
+    download_url = request.url_for(
+        'download_conversation_attachment',
+        conversation_id=conversation_id,
+        message_id=message_id,
+        attachment_id=attachment.id,
+    )
+    return MessageAttachmentRead(
+        id=attachment.id,
+        filename=attachment.filename,
+        content_type=attachment.content_type,
+        file_size=attachment.file_size,
+        is_inline=attachment.is_inline,
+        is_inbound=attachment.is_inbound,
+        download_url=str(download_url),
+    )
 
 def _scenario_state_summary(state: ConversationScenarioState | None) -> ScenarioStateSummary | None:
     if state is None or state.scenario is None:
@@ -109,6 +142,7 @@ async def list_conversations(
 @router.get("/{conversation_id}", response_model=ConversationDetail)
 async def get_conversation(
     conversation_id: int,
+    request: Request,
     service: ConversationService = Depends(get_conversation_service),
     _user=Depends(get_current_active_user),
 ) -> ConversationDetail:
@@ -116,22 +150,28 @@ async def get_conversation(
         conversation = await service.get_conversation(conversation_id)
     except NoResultFound as exc:  # pragma: no cover - defensive
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from exc
-    messages = [
-        MessageRead(
-            id=message.id,
-            sender_type=message.sender_type,
-            direction=message.direction,
-            subject=message.subject,
-            body_plain=message.body_plain,
-            body_html=message.body_html,
-            detected_language=message.detected_language,
-            sent_at=message.sent_at,
-            received_at=message.received_at,
-            requires_attention=message.requires_attention,
-            is_draft=message.is_draft,
+    messages: List[MessageRead] = []
+    for message in conversation.messages:
+        attachment_models = [
+            _attachment_to_schema(request, conversation.id, message.id, attachment)
+            for attachment in getattr(message, "attachments", [])
+        ]
+        messages.append(
+            MessageRead(
+                id=message.id,
+                sender_type=message.sender_type,
+                direction=message.direction,
+                subject=message.subject,
+                body_plain=message.body_plain,
+                body_html=message.body_html,
+                detected_language=message.detected_language,
+                sent_at=message.sent_at,
+                received_at=message.received_at,
+                requires_attention=message.requires_attention,
+                is_draft=message.is_draft,
+                attachments=attachment_models,
+            )
         )
-        for message in conversation.messages
-    ]
     logs = sorted(conversation.logs, key=lambda entry: entry.created_at)
     return ConversationDetail(
         id=conversation.id,
@@ -147,8 +187,10 @@ async def get_conversation(
 @router.post("/{conversation_id}/send", response_model=MessageRead)
 async def send_message(
     conversation_id: int,
-    payload: MessageSendRequest,
+    request: Request,
     service: ConversationService = Depends(get_conversation_service),
+    attachment_service: AttachmentService = Depends(get_attachment_service),
+    settings: Settings = Depends(get_settings_dependency),
     _user=Depends(get_current_active_user),
 ) -> MessageRead:
     try:
@@ -156,14 +198,117 @@ async def send_message(
     except NoResultFound as exc:  # pragma: no cover - defensive
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from exc
 
-    sender_type = (
-        MessageSender.ASSISTANT if payload.send_mode == "approve_ai" else MessageSender.MANAGER
-    )
+    content_type = request.headers.get('content-type', '')
+    upload_files: list[UploadFile] = []
+    if content_type.startswith('multipart/form-data'):
+        form = await request.form()
+        text = (form.get('text') or '').strip()
+        send_mode = form.get('send_mode')
+        subject = form.get('subject')
+        upload_files = [
+            item for item in form.getlist('attachments') if isinstance(item, UploadFile)
+        ]
+    else:
+        try:
+            payload_data = await request.json()
+        except ValueError as exc:  # pragma: no cover - defensive
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Invalid payload') from exc
+        text = (payload_data.get('text') or '').strip()
+        send_mode = payload_data.get('send_mode')
+        subject = payload_data.get('subject')
+
+    try:
+        payload = MessageSendRequest(text=text, send_mode=send_mode, subject=subject)
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors()) from exc
+
+    if not payload.text.strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Message text is required')
+
+    sender_type = MessageSender.ASSISTANT if payload.send_mode == 'approve_ai' else MessageSender.MANAGER
 
     message = await service.record_outbound_message(conversation, payload, sender_type)
-    await service.session.commit()
-    await service.session.refresh(message)
 
+    saved_attachments: list[MessageAttachment] = []
+    for upload in upload_files:
+        try:
+            storage_path, size = await attachment_service.save_upload(conversation.id, upload)
+        except AttachmentTooLargeError as exc:  # pragma: no cover - defensive
+            await upload.close()
+            await service.session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=str(exc),
+            ) from exc
+        attachment = MessageAttachment(
+            conversation_id=conversation.id,
+            message=message,
+            filename=upload.filename or 'attachment',
+            content_type=upload.content_type,
+            file_size=size,
+            storage_path=storage_path,
+            is_inline=False,
+            is_inbound=False,
+            uploaded_by_id=getattr(_user, 'id', None),
+        )
+        service.session.add(attachment)
+        saved_attachments.append(attachment)
+        await upload.close()
+
+    await service.session.flush()
+
+    outbound_attachments: list[OutboundAttachment] = []
+    for attachment in saved_attachments:
+        data = await attachment_service.read_bytes(attachment.storage_path)
+        outbound_attachments.append(
+            OutboundAttachment(
+                filename=attachment.filename,
+                content_type=attachment.content_type,
+                payload=data,
+            )
+        )
+
+    if not conversation.client or not conversation.client.email:
+        await service.session.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='Client email is missing')
+
+    last_inbound = next(
+        (msg for msg in reversed(conversation.messages) if msg.direction == MessageDirection.INBOUND),
+        None,
+    )
+    references: list[str] = []
+    if last_inbound and last_inbound.external_id:
+        references.append(last_inbound.external_id)
+    if last_inbound and last_inbound.in_reply_to:
+        references.append(last_inbound.in_reply_to)
+    if references:
+        references = list(dict.fromkeys(filter(None, references)))
+
+    outbound_email = OutboundEmail(
+        to_addresses=[conversation.client.email],
+        subject=message.subject or payload.subject or (conversation.topic or ''),
+        body_plain=payload.text,
+        body_html=AutomationService._plain_to_html(payload.text),
+        in_reply_to=last_inbound.external_id if last_inbound else None,
+        references=references or None,
+        attachments=outbound_attachments or None,
+    )
+
+    dispatcher = AutomationService(service.session, settings=settings)
+    try:
+        await dispatcher.dispatch_email(outbound_email)
+    except Exception as exc:  # pragma: no cover - defensive
+        await service.session.rollback()
+        logger.exception('Failed to dispatch manual email for conversation %s: %s', conversation.id, exc)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail='Failed to send email') from exc
+
+    await service.session.commit()
+    await service.session.refresh(message, attribute_names=['attachments'])
+
+    attachment_models = [
+        _attachment_to_schema(request, conversation.id, message.id, attachment)
+        for attachment in getattr(message, 'attachments', [])
+    ]
     return MessageRead(
         id=message.id,
         sender_type=message.sender_type,
@@ -176,6 +321,35 @@ async def send_message(
         received_at=message.received_at,
         requires_attention=message.requires_attention,
         is_draft=message.is_draft,
+        attachments=attachment_models,
+    )
+
+
+@router.get(
+    "/{conversation_id}/messages/{message_id}/attachments/{attachment_id}",
+    response_class=FileResponse,
+    name="download_conversation_attachment",
+)
+async def download_attachment(
+    conversation_id: int,
+    message_id: int,
+    attachment_id: int,
+    service: ConversationService = Depends(get_conversation_service),
+    attachment_service: AttachmentService = Depends(get_attachment_service),
+    _user=Depends(get_current_active_user),
+) -> FileResponse:
+    attachment = await service.session.get(MessageAttachment, attachment_id)
+    if (
+        attachment is None
+        or attachment.conversation_id != conversation_id
+        or attachment.message_id != message_id
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
+    file_path = attachment_service.resolve_path(attachment.storage_path)
+    return FileResponse(
+        file_path,
+        media_type=attachment.content_type or "application/octet-stream",
+        filename=attachment.filename,
     )
 
 

@@ -14,6 +14,7 @@ const state = {
         conversations: false,
         detail: false,
     },
+    composeAttachments: [],
 };
 
 const elements = {
@@ -197,6 +198,20 @@ function scheduleConversationRefresh() {
     }, 60000);
 }
 
+function formatFileSize(bytes) {
+    if (!Number.isFinite(bytes) || bytes < 0) {
+        return '';
+    }
+    const units = ['Б', 'КБ', 'МБ', 'ГБ'];
+    let size = bytes;
+    let unitIndex = 0;
+    while (size >= 1024 && unitIndex < units.length - 1) {
+        size /= 1024;
+        unitIndex += 1;
+    }
+    return `${size >= 10 || unitIndex === 0 ? Math.round(size) : size.toFixed(1)} ${units[unitIndex]}`;
+}
+
 function formatTimestamp(value) {
     if (!value) {
         return '';
@@ -351,6 +366,8 @@ function clearAuth() {
     state.currentConversation = null;
     state.currentConversationId = null;
     state.selectedMessageId = null;
+    state.composeAttachments = [];
+    renderComposeAttachments();
     updateAuthUI();
     renderConversations();
     if (elements.detailView && elements.emptyState) {
@@ -707,10 +724,72 @@ function renderMessageViewer(conversation) {
     }
         elements.messageTags.innerHTML = tags.join('');
         elements.messageTags.classList.toggle('hidden', tags.length === 0);
+    renderMessageAttachments(message);
     elements.messageContent.innerHTML = renderMessageBody(message);
     elements.messageViewer.scrollTop = 0;
 }
 
+function renderMessageAttachments(message) {
+    if (!elements.messageAttachments) {
+        return;
+    }
+    const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+    if (!attachments.length) {
+        elements.messageAttachments.innerHTML = '';
+        elements.messageAttachments.classList.add('hidden');
+        return;
+    }
+    const markup = attachments
+        .map((attachment) => {
+            const size = typeof attachment.file_size === 'number' ? formatFileSize(attachment.file_size) : '';
+            const label = size ? ${escapeHtml(attachment.filename)} () : escapeHtml(attachment.filename);
+            return <a href="" target="_blank" rel="noopener"></a>;
+        })
+        .join('');
+    elements.messageAttachments.innerHTML = markup;
+    elements.messageAttachments.classList.remove('hidden');
+}
+
+function renderComposeAttachments() {
+    if (!elements.composeAttachmentsList) {
+        return;
+    }
+    const attachments = state.composeAttachments || [];
+    if (!attachments.length) {
+        elements.composeAttachmentsList.innerHTML = '';
+        elements.composeAttachmentsList.classList.add('hidden');
+        return;
+    }
+    const items = attachments
+        .map((file, index) => {
+            const size = typeof file.size === 'number' ? formatFileSize(file.size) : '';
+            const label = size ? ${escapeHtml(file.name)} () : escapeHtml(file.name);
+            return <li><span></span><button type="button" class="attachment-remove" data-index="">×</button></li>;
+        })
+        .join('');
+    elements.composeAttachmentsList.innerHTML = items;
+    elements.composeAttachmentsList.classList.remove('hidden');
+}
+
+function handleAttachmentSelection(event) {
+    const files = Array.from(event.target.files || []);
+    if (!files.length) {
+        return;
+    }
+    files.forEach((file) => {
+        state.composeAttachments.push(file);
+    });
+    renderComposeAttachments();
+    event.target.value = '';
+}
+
+function removeComposeAttachment(index) {
+    if (index < 0 || index >= state.composeAttachments.length) {
+        return;
+    }
+    state.composeAttachments.splice(index, 1);
+    renderComposeAttachments();
+}
 function renderLogs(logs) {
     if (!elements.logList) {
         return;
@@ -760,6 +839,11 @@ function renderDetail(conversation, options = {}) {
 
     if (!preserveDraft) {
         elements.composeText.value = '';
+        state.composeAttachments = [];
+        if (elements.composeAttachmentsInput) {
+            elements.composeAttachmentsInput.value = '';
+        }
+        renderComposeAttachments();
     }
 }
 
@@ -908,13 +992,20 @@ async function handleSend(sendMode) {
     }
     const textValue = elements.composeText.value.trim();
     if (!textValue) {
-        showToast('Добавьте текст ответа', 'error');
+        showToast('�������� ����� ������', 'error');
         return;
     }
     try {
-        const message = await apiFetch(`/conversations/${state.currentConversation.id}/send`, {
+        const formData = new FormData();
+        formData.append('text', textValue);
+        formData.append('send_mode', sendMode);
+        formData.append('subject', '');
+        (state.composeAttachments || []).forEach((file) => {
+            formData.append('attachments', file);
+        });
+        const message = await apiFetch(/conversations//send, {
             method: 'POST',
-            body: JSON.stringify({ text: textValue, send_mode: sendMode, subject: null }),
+            body: formData,
         });
         const messages = Array.isArray(state.currentConversation.messages)
             ? [...state.currentConversation.messages, message]
@@ -924,12 +1015,18 @@ async function handleSend(sendMode) {
             messages,
             status: 'answered_by_llm',
         };
+        state.composeAttachments = [];
+        if (elements.composeAttachmentsInput) {
+            elements.composeAttachmentsInput.value = '';
+        }
+        renderComposeAttachments();
+        elements.composeText.value = '';
         state.selectedMessageId = message.id;
-        renderDetail(updatedConversation, { preserveSelection: true });
-        showToast('Ответ отправлен');
+        renderDetail(updatedConversation, { preserveSelection: true, preserveDraft: true });
+        showToast('����� ���������');
         await loadConversations();
     } catch (error) {
-        showToast(error.message || 'Не удалось отправить сообщение', 'error');
+        showToast(error.message || '�� ������� ��������� ���������', 'error');
     }
 }
 
@@ -1135,6 +1232,27 @@ function initEventListeners() {
         });
     });
 
+        if (elements.composeAttachmentsBtn && elements.composeAttachmentsInput) {
+        elements.composeAttachmentsBtn.addEventListener('click', () => {
+            elements.composeAttachmentsInput.click();
+        });
+        elements.composeAttachmentsInput.addEventListener('change', handleAttachmentSelection);
+    }
+
+    if (elements.composeAttachmentsList) {
+        elements.composeAttachmentsList.addEventListener('click', (event) => {
+            const button = event.target.closest('.attachment-remove');
+            if (!button) {
+                return;
+            }
+            const index = Number.parseInt(button.dataset.index, 10);
+            if (Number.isNaN(index)) {
+                return;
+            }
+            removeComposeAttachment(index);
+        });
+    }
+
     elements.assignScenario.addEventListener('click', () => {
         handleAssignScenario().catch((error) => showToast(error.message, 'error'));
     });
@@ -1198,6 +1316,7 @@ function initEventListeners() {
     elements.conversationSearch.addEventListener('input', handleConversationSearch);
     elements.conversationSearch.addEventListener('search', handleConversationSearch);
     elements.statusFilter.addEventListener('change', handleStatusFilterChange);
+    renderComposeAttachments();
 }
 
 async function init() {
@@ -1210,3 +1329,5 @@ async function init() {
 
 initEventListeners();
 init().catch((error) => showToast(error.message || 'Не удалось инициализировать приложение', 'error'));
+
+

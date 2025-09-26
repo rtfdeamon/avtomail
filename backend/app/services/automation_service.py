@@ -1,22 +1,29 @@
 ﻿from __future__ import annotations
 
 import asyncio
+import base64
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
+from celery.exceptions import CeleryError, TimeoutError
+
 from app.core.config import Settings, get_settings
 from app.core.logging import logger
 from app.models import Client, Conversation, Message
+from app.models.attachment import MessageAttachment
 from app.models.scenario import ConversationScenarioState, Scenario, ScenarioStep
 from app.models.enums import ConversationActor, ConversationLogEvent, ConversationStatus, MessageDirection, MessageSender
 from app.schemas import MessageSendRequest
+from app.services.attachment_service import AttachmentService, AttachmentTooLargeError
 from app.services.conversation_service import ConversationService
 from app.services.language_service import LanguageDetector
 from app.services.llm_service import LLMRequest, LLMResponse, LLMService
-from app.services.mail_service import InboundEmail, MailService, OutboundEmail
+from app.services.mail_service import EmailAttachment, InboundEmail, MailService, OutboundEmail
+from app.workers.tasks import generate_llm_reply_task, send_email_task
 
 
 @dataclass(slots=True)
@@ -43,6 +50,8 @@ class AutomationService:
         self.llm_service = llm_service or LLMService(self.settings)
         self.language_detector = language_detector or LanguageDetector(self.settings)
         self.conversation_service = ConversationService(session)
+        self.attachment_service = AttachmentService(self.settings)
+        self.queue_enabled = self.settings.enable_task_queue
 
     # ------------------------------------------------------------------
     async def process_inbound(self, email: InboundEmail) -> AutomationResult:
@@ -58,7 +67,7 @@ class AutomationService:
         logger.info("Processing inbound email %s for conversation %s", email.message_id, conversation.id)
         llm_messages = await self._build_llm_messages(conversation)
         llm_request = LLMRequest(messages=llm_messages)
-        llm_response = await self.llm_service.generate_reply(llm_request)
+        llm_response = await self._generate_reply(llm_request)
         logger.info(
             "LLM response generated for conversation %s (requires_human=%s)",
             conversation.id,
@@ -194,7 +203,45 @@ class AutomationService:
         )
         self.session.add(message)
         await self.conversation_service.register_inbound_message(conversation, message)
+        await self.session.flush()
+        await self._store_inbound_attachments(conversation, message, email.attachments)
         return message
+
+    async def _store_inbound_attachments(
+        self,
+        conversation: Conversation,
+        message: Message,
+        attachments: list[EmailAttachment],
+    ) -> None:
+        if not attachments:
+            return
+        for attachment in attachments:
+            try:
+                storage_path, size = await self.attachment_service.save_bytes(
+                    conversation.id,
+                    attachment.filename,
+                    attachment.payload,
+                )
+            except AttachmentTooLargeError as exc:
+                logger.warning(
+                    'Skipping attachment %s for conversation %s: %s',
+                    attachment.filename,
+                    conversation.id,
+                    exc,
+                )
+                continue
+            record = MessageAttachment(
+                conversation_id=conversation.id,
+                message=message,
+                filename=attachment.filename,
+                content_type=attachment.content_type,
+                file_size=size,
+                storage_path=storage_path,
+                is_inline=attachment.is_inline,
+                is_inbound=True,
+            )
+            self.session.add(record)
+        await self.session.flush()
 
     async def _store_draft(
         self,
@@ -249,13 +296,79 @@ class AutomationService:
             references=references,
         )
         try:
-            await asyncio.to_thread(self.mail_service.send_email, outbound_email)
+            await self._dispatch_email(outbound_email)
         except Exception as exc:  # pragma: no cover - network failure path
             logger.exception("Failed to send auto-reply for conversation %s: %s", conversation.id, exc)
             message.requires_attention = True
             await self.conversation_service.mark_needs_human(conversation, message)
             raise
         return message
+
+    async def _generate_reply(self, request: LLMRequest) -> LLMResponse:
+        if not self.queue_enabled:
+            return await self.llm_service.generate_reply(request)
+        try:
+            return await self._generate_reply_via_queue(request)
+        except (TimeoutError, CeleryError) as exc:
+            logger.warning('Queue LLM execution failed (%s); falling back to inline call', exc)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning('Unexpected queue failure; falling back to inline call: %s', exc)
+        return await self.llm_service.generate_reply(request)
+
+    async def _generate_reply_via_queue(self, request: LLMRequest) -> LLMResponse:
+        payload: dict[str, Any] = {
+            'messages': [dict(message) for message in request.messages],
+            'temperature': request.temperature,
+            'max_tokens': request.max_tokens,
+        }
+        result = await self._apply_task(generate_llm_reply_task, payload, timeout=180)
+        return LLMResponse(
+            content=result.get('content', ''),
+            requires_human=bool(result.get('requires_human')),
+            raw=result.get('raw'),
+        )
+
+    async def _dispatch_email(self, email: OutboundEmail) -> None:
+        if not self.queue_enabled:
+            await asyncio.to_thread(self.mail_service.send_email, email)
+            return
+        payload = self._serialize_email(email)
+        try:
+            await self._apply_task(send_email_task, payload, timeout=180)
+        except (TimeoutError, CeleryError) as exc:
+            logger.warning('Queue email send failed (%s); retrying inline', exc)
+            await asyncio.to_thread(self.mail_service.send_email, email)
+
+    async def dispatch_email(self, email: OutboundEmail) -> None:
+        await self._dispatch_email(email)
+
+    def _serialize_email(self, email: OutboundEmail) -> dict[str, Any]:
+        return {
+            'to_addresses': list(email.to_addresses),
+            'subject': email.subject,
+            'body_plain': email.body_plain,
+            'body_html': email.body_html,
+            'in_reply_to': email.in_reply_to,
+            'references': list(email.references or []),
+            'reply_to': list(email.reply_to or []),
+            'attachments': [
+                {
+                    'filename': item.filename,
+                    'content_type': item.content_type,
+                    'payload': base64.b64encode(item.payload).decode('ascii'),
+                }
+                for item in (email.attachments or [])
+            ],
+        }
+
+    async def _apply_task(self, task, payload: Any, timeout: int = 180) -> Any:
+        loop = asyncio.get_running_loop()
+
+        def _invoke():
+            result = task.apply_async(args=[payload])
+            return result.get(timeout=timeout)
+
+        return await loop.run_in_executor(None, _invoke)
 
     async def _build_llm_messages(self, conversation: Conversation) -> list[dict[str, str]]:
         system_message = {

@@ -48,7 +48,11 @@ class ConversationService:
     async def get_conversation(self, conversation_id: int) -> Conversation:
         stmt: Select[Conversation] = (
             select(Conversation)
-            .options(*self._base_options(), joinedload(Conversation.messages), joinedload(Conversation.logs))
+            .options(
+                *self._base_options(),
+                joinedload(Conversation.messages).joinedload(Message.attachments),
+                joinedload(Conversation.logs),
+            )
             .where(Conversation.id == conversation_id)
         )
         conversation = (await self.session.scalars(stmt)).unique().one()

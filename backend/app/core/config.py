@@ -45,12 +45,23 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = Field(default=30)
 
     poll_interval_seconds: int = Field(default=120)
+    enable_task_queue: bool = Field(default=True)
+    celery_broker_url: str = Field(default="redis://localhost:6379/0")
+    celery_result_backend: str = Field(default="redis://localhost:6379/0")
+    celery_task_always_eager: bool = Field(default=False)
+    celery_task_eager_propagates: bool = Field(default=True)
     default_admin_email: str = Field(default="admin", description="Bootstrap admin login")
     default_admin_password: str = Field(default="admin", description="Bootstrap admin password", repr=False)
+
+    attachments_dir: str = Field(default="storage/attachments")
+    max_attachment_size_mb: int = Field(default=25)
 
     manager_review_delay_minutes: int = Field(default=0)
     language_detection_min_chars: int = Field(default=20)
     log_level: str = Field(default="INFO")
+    sentry_dsn: str | None = Field(default=None, repr=False)
+    sentry_environment: str | None = None
+    sentry_traces_sample_rate: float = Field(default=0.0)
 
     model_config = SettingsConfigDict(
         env_file=".env",

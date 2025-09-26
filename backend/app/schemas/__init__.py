@@ -3,7 +3,7 @@
 from app.schemas.client import ClientCreate, ClientSummary
 from app.schemas.conversation import ConversationDetail, ConversationSummary
 from app.schemas.log import ConversationLogEntryRead, ConversationNoteCreate
-from app.schemas.message import MessageRead, MessageSendRequest
+from app.schemas.message import MessageAttachmentRead, MessageRead, MessageSendRequest
 from app.schemas.scenario import (
     ScenarioAdvanceRequest,
     ScenarioAssignRequest,
@@ -25,6 +25,7 @@ __all__ = [
     "ConversationLogEntryRead",
     "ConversationNoteCreate",
     "ConversationSummary",
+    "MessageAttachmentRead",
     "MessageRead",
     "MessageSendRequest",
     "ScenarioAdvanceRequest",

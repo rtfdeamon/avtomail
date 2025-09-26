@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import List, TYPE_CHECKING
 
 from sqlalchemy import Enum, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
 from app.models.enums import MessageDirection, MessageSender
+
+if TYPE_CHECKING:
+    from app.models.attachment import MessageAttachment
 
 
 class Message(TimestampMixin, Base):
@@ -39,3 +43,7 @@ class Message(TimestampMixin, Base):
     is_draft: Mapped[bool] = mapped_column(default=False)
 
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")
+    attachments: Mapped[List["MessageAttachment"]] = relationship(
+        back_populates="message",
+        cascade="all, delete-orphan",
+    )

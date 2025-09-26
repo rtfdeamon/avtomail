@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.db.session import get_db
+from app.services.attachment_service import AttachmentService
 from app.services.conversation_service import ConversationService
 from app.services.scenario_service import ScenarioService
 
@@ -23,3 +24,9 @@ async def get_scenario_service(
     session: AsyncSession = Depends(get_db),
 ) -> ScenarioService:
     return ScenarioService(session)
+
+
+async def get_attachment_service(
+    settings: Settings = Depends(get_settings_dependency),
+) -> AttachmentService:
+    return AttachmentService(settings)
